@@ -1,20 +1,47 @@
+import GoogleIcon from "@/components/icons/GoogleIcon";
+import AppButton from "@/components/ui/AppButton";
+import AppInput from "@/components/ui/AppInput";
+import { authService } from "@/services/auth.service";
+
 import { zodResolver } from "@hookform/resolvers/zod";
+import axios from "axios";
 import { router, useLocalSearchParams } from "expo-router";
-import { ArrowLeft, Building2, Plane, UserRound } from "lucide-react-native";
+import {
+  Apple,
+  ArrowLeft,
+  Building2,
+  Check,
+  Plane,
+  UserRound,
+} from "lucide-react-native";
 import { useState } from "react";
 import { Controller, useForm } from "react-hook-form";
-import { Alert, Pressable, ScrollView, Text, View } from "react-native";
+import {
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { z } from "zod";
 
-import AppButton from "@/components/ui/AppButton";
-import AppInput from "@/components/ui/AppInput";
+// ----------------------------------------
+// VALIDATION
+// ----------------------------------------
 
 const registerSchema = z
   .object({
-    firstName: z.string().trim().min(2, "First name is required."),
-    lastName: z.string().trim().min(2, "Last name is required."),
-    email: z.string().trim().email("Enter a valid email address."),
+    firstName: z
+      .string()
+      .trim()
+      .min(2, "First name must be at least 2 characters."),
+    lastName: z
+      .string()
+      .trim()
+      .min(2, "Last name must be at least 2 characters."),
+    email: z.email("Enter a valid email address."),
     phone: z
       .string()
       .regex(/^09\d{9}$/, "Enter a valid PH mobile number (09XXXXXXXXX)."),
@@ -31,25 +58,66 @@ type RegisterForm = z.infer<typeof registerSchema>;
 const accountTypes = {
   customer: {
     title: "Customer Account",
-    description: "Book professional drone services.",
+    description: "Discover and book professional drone services.",
     Icon: UserRound,
   },
   provider: {
     title: "Service Provider Account",
-    description: "Offer and manage drone services.",
+    description: "Offer drone services and manage your operations.",
     Icon: Building2,
   },
   pilot: {
     title: "Drone Pilot Account",
-    description: "Manage drone assignments.",
+    description: "Build your portfolio and explore flying opportunities.",
     Icon: Plane,
   },
 } as const;
 
 type AccountRole = keyof typeof accountTypes;
+type SocialProvider = "google" | "apple";
+
+type ApiErrorBody = {
+  message?: string;
+  errors?: Record<string, string[]>;
+};
+
+function getRegistrationError(error: unknown): string {
+  if (axios.isAxiosError<ApiErrorBody>(error)) {
+    if (!error.response) {
+      return (
+        "Unable to connect to the ApusFly server. " +
+        "Check your internet connection and API address."
+      );
+    }
+
+    const response = error.response.data;
+
+    const validationError = response?.errors
+      ? Object.values(response.errors).flat()[0]
+      : undefined;
+
+    if (error.response.status >= 500) {
+      return "The server encountered an error. Please try again later.";
+    }
+
+    return (
+      validationError ||
+      response?.message ||
+      "Unable to create your account. Please try again."
+    );
+  }
+
+  return "An unexpected error occurred. Please try again.";
+}
+
+// ----------------------------------------
+// REGISTRATION SCREEN
+// ----------------------------------------
 
 export default function RegisterScreen() {
-  const { role } = useLocalSearchParams<{ role?: string }>();
+  const { role } = useLocalSearchParams<{
+    role?: string;
+  }>();
 
   const selectedRole: AccountRole | null =
     typeof role === "string" && role in accountTypes
@@ -57,7 +125,12 @@ export default function RegisterScreen() {
       : null;
 
   const account = selectedRole ? accountTypes[selectedRole] : null;
+
   const [acceptedTerms, setAcceptedTerms] = useState(false);
+
+  const [socialLoading, setSocialLoading] = useState<SocialProvider | null>(
+    null,
+  );
 
   const {
     control,
@@ -75,29 +148,117 @@ export default function RegisterScreen() {
     },
   });
 
-  const onSubmit = async (data: RegisterForm) => {
-    if (!selectedRole) {
-      Alert.alert("Select an account type", "Please choose a role first.");
-      return;
-    }
+  const isBusy = isSubmitting || socialLoading !== null;
 
+  // ----------------------------------------
+  // TERMS VALIDATION
+  // ----------------------------------------
+
+  const validateAgreement = (): boolean => {
     if (!acceptedTerms) {
       Alert.alert(
-        "Agreement required",
+        "Agreement Required",
         "Please accept the Terms of Service and Privacy Policy.",
+      );
+      return false;
+    }
+
+    return true;
+  };
+
+  // ----------------------------------------
+  // EMAIL REGISTRATION
+  // ----------------------------------------
+
+  const onSubmit = async (data: RegisterForm) => {
+    if (!selectedRole) {
+      Alert.alert(
+        "Account Type Required",
+        "Please select an account type first.",
       );
       return;
     }
 
-    // UI validation only. No account is created yet.
-    // Do not log passwords or other registration credentials.
-    console.log("Registration validated:", selectedRole);
+    if (!validateAgreement()) return;
 
-    Alert.alert(
-      "Form validated",
-      "Your registration details are valid. Account creation will be available after API integration.",
-    );
+    if (selectedRole === "provider") {
+      Alert.alert(
+        "Registration Unavailable",
+        "Service Provider registration is not yet available. Please wait for provider onboarding.",
+      );
+      return;
+    }
+
+    try {
+      await authService.register({
+        first_name: data.firstName.trim(),
+        last_name: data.lastName.trim(),
+        email: data.email.trim().toLowerCase(),
+        phone: data.phone.trim(),
+        password: data.password,
+        password_confirmation: data.confirmPassword,
+        account_type: selectedRole,
+      });
+
+      Alert.alert(
+        "Registration Successful!",
+        "Your ApusFly account has been created successfully. You can now sign in.",
+        [
+          {
+            text: "Sign In",
+            onPress: () => router.replace("/(auth)/login"),
+          },
+        ],
+      );
+    } catch (error) {
+      Alert.alert("Registration Failed", getRegistrationError(error));
+    }
   };
+
+  // ----------------------------------------
+  // SOCIAL REGISTRATION
+  // ----------------------------------------
+
+  const handleSocialRegister = async (provider: SocialProvider) => {
+    if (!selectedRole) {
+      Alert.alert(
+        "Account Type Required",
+        "Please select an account type first.",
+      );
+      return;
+    }
+
+    if (!validateAgreement()) return;
+
+    if (selectedRole !== "customer") {
+      Alert.alert(
+        "Social Registration Unavailable",
+        "Google and Apple registration for pilot and provider accounts is not available yet.",
+      );
+      return;
+    }
+
+    setSocialLoading(provider);
+
+    try {
+      // Google account creation is intentionally not
+      // enabled here until registration consent and
+      // onboarding are integrated with the backend.
+      //
+      // Apple authentication is also pending.
+
+      Alert.alert(
+        provider === "google" ? "Google Registration" : "Apple Registration",
+        "Social registration will be available after the account onboarding integration is completed.",
+      );
+    } finally {
+      setSocialLoading(null);
+    }
+  };
+
+  // ----------------------------------------
+  // INVALID ACCOUNT TYPE
+  // ----------------------------------------
 
   if (!account) {
     return (
@@ -105,6 +266,7 @@ export default function RegisterScreen() {
         <Text className="mb-5 text-lg font-semibold text-center text-charcoal">
           Please select an account type first.
         </Text>
+
         <AppButton
           title="Choose Account Type"
           onPress={() => router.replace("/role-selection")}
@@ -115,30 +277,42 @@ export default function RegisterScreen() {
 
   const AccountIcon = account.Icon;
 
+  // ----------------------------------------
+  // UI
+  // ----------------------------------------
+
   return (
     <SafeAreaView className="flex-1 bg-white">
       <ScrollView
         className="flex-1 px-6"
-        contentContainerStyle={{ paddingBottom: 40 }}
+        contentContainerStyle={{
+          paddingBottom: 48,
+        }}
         keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
+        {/* BACK BUTTON */}
         <Pressable
           onPress={() => router.back()}
-          className="items-center justify-center mt-4 h-11 w-11 rounded-xl bg-surface"
+          accessibilityRole="button"
           accessibilityLabel="Go back"
+          className="items-center justify-center mt-4 h-11 w-11 rounded-xl bg-surface"
         >
           <ArrowLeft size={22} color="#171717" />
         </Pressable>
 
-        <Text className="mt-8 text-3xl font-bold text-charcoal">
-          Create your account
-        </Text>
+        {/* HEADER */}
+        <View className="mt-8">
+          <Text className="text-3xl font-bold text-charcoal">
+            Create your account
+          </Text>
 
-        <Text className="mt-2 text-base text-gray-500">
-          Join ApusFly and get started.
-        </Text>
+          <Text className="mt-3 text-base leading-6 text-gray-500">
+            Join ApusFly and start your journey with us.
+          </Text>
+        </View>
 
-        {/* Selected account type */}
+        {/* SELECTED ACCOUNT TYPE */}
         <View className="flex-row items-center p-4 border border-green-200 mt-7 rounded-2xl bg-green-50">
           <View className="items-center justify-center w-12 h-12 mr-4 bg-white rounded-xl">
             <AccountIcon size={25} color="#559E1C" />
@@ -148,13 +322,25 @@ export default function RegisterScreen() {
             <Text className="text-base font-bold text-charcoal">
               {account.title}
             </Text>
-            <Text className="mt-1 text-sm text-gray-500">
+
+            <Text className="mt-1 text-sm leading-5 text-gray-500">
               {account.description}
             </Text>
           </View>
+
+          <Pressable
+            onPress={() => router.push("/role-selection")}
+            accessibilityRole="button"
+            accessibilityLabel="Change account type"
+            className="ml-2"
+          >
+            <Text className="text-xs font-semibold text-primary-dark">
+              Change
+            </Text>
+          </Pressable>
         </View>
 
-        {/* Registration fields */}
+        {/* REGISTRATION FIELDS */}
         <View className="mt-8">
           <Controller
             control={control}
@@ -258,13 +444,15 @@ export default function RegisterScreen() {
           />
         </View>
 
-        {/* Terms agreement */}
-        <View className="flex-row items-start gap-3 mb-8">
+        {/* TERMS AGREEMENT */}
+        <View className="flex-row items-start gap-3 mt-2 mb-7">
           <Pressable
             onPress={() => setAcceptedTerms((prev) => !prev)}
             accessibilityRole="checkbox"
             accessibilityLabel="Agree to Terms of Service and Privacy Policy"
-            accessibilityState={{ checked: acceptedTerms }}
+            accessibilityState={{
+              checked: acceptedTerms,
+            }}
             className={`mt-1 h-6 w-6 items-center justify-center rounded-md border ${
               acceptedTerms
                 ? "border-primary bg-primary"
@@ -272,7 +460,7 @@ export default function RegisterScreen() {
             }`}
           >
             {acceptedTerms && (
-              <Text className="font-bold text-charcoal">✓</Text>
+              <Check size={16} color="#171717" strokeWidth={3} />
             )}
           </Pressable>
 
@@ -299,15 +487,70 @@ export default function RegisterScreen() {
           </View>
         </View>
 
+        {/* EMAIL REGISTRATION */}
         <AppButton
           title="Create Account"
           loading={isSubmitting}
+          disabled={isBusy}
           onPress={handleSubmit(onSubmit)}
         />
 
+        {/* DIVIDER */}
+        <View className="flex-row items-center gap-4 my-8">
+          <View className="flex-1 h-px bg-gray-200" />
+
+          <Text className="text-sm font-medium text-gray-400">
+            or continue with
+          </Text>
+
+          <View className="flex-1 h-px bg-gray-200" />
+        </View>
+
+        {/* SOCIAL REGISTRATION */}
+        <View className="gap-3">
+          {/* GOOGLE */}
+          <Pressable
+            onPress={() => handleSocialRegister("google")}
+            disabled={isBusy}
+            accessibilityRole="button"
+            accessibilityLabel="Continue with Google"
+            className="flex-row items-center justify-center gap-3 bg-white border border-gray-200 h-14 rounded-xl active:bg-gray-50"
+          >
+            <GoogleIcon size={22} />
+
+            <Text className="text-base font-semibold text-charcoal">
+              Continue with Google
+            </Text>
+          </Pressable>
+
+          {/* APPLE - IOS ONLY */}
+          {Platform.OS === "ios" && (
+            <Pressable
+              onPress={() => handleSocialRegister("apple")}
+              disabled={isBusy}
+              accessibilityRole="button"
+              accessibilityLabel="Continue with Apple"
+              className="flex-row items-center justify-center gap-3 h-14 rounded-xl bg-charcoal active:opacity-80"
+            >
+              <Apple size={22} color="#FFFFFF" />
+
+              <Text className="text-base font-semibold text-white">
+                Continue with Apple
+              </Text>
+            </Pressable>
+          )}
+        </View>
+
+        {/* SOCIAL REGISTRATION NOTE */}
+        <Text className="mt-5 text-xs leading-5 text-center text-gray-400">
+          Social registration requires additional onboarding and verification.
+        </Text>
+
+        {/* SIGN IN */}
         <View className="flex-row justify-center mt-8">
           <Text className="text-gray-500">Already have an account? </Text>
-          <Pressable onPress={() => router.push("/login")}>
+
+          <Pressable onPress={() => router.push("/(auth)/login")}>
             <Text className="font-semibold text-primary-dark">Sign In</Text>
           </Pressable>
         </View>
